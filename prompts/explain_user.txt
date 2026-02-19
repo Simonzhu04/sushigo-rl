@@ -1,0 +1,19 @@
+STATE_JSON:
+{{STATE_JSON}}
+
+Chosen action index: {{CHOSEN_ACTION}}
+TopK recommendations requested: {{TOPK}}
+
+Task:
+1) Identify the chosen card from current_hand using Chosen action index.
+2) Explain why the move is reasonable using explicit state numbers:
+   - recommendation probability (if present)
+   - maki race (my_maki_icons vs opp_maki_icons)
+   - unpaired wasabi count
+   - relevant played-count progress (pairs/triples/set growth)
+3) Mention one alternative legal move and its tradeoff.
+
+Output format:
+- "Move:"
+- "Why:"
+- "Tradeoff:"

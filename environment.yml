@@ -1,0 +1,16 @@
+name: sushigo-rl
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - gymnasium
+  - pytest
+  - matplotlib
+  - pip:
+      - stable-baselines3
+      - sb3-contrib
+      - openai
+      - google-genai
+      - google-genai

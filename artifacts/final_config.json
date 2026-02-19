@@ -1,0 +1,30 @@
+{
+  "hand_size": 10,
+  "obs_mode": "slot",
+  "model_path": "artifacts/final_policy.zip",
+  "vecnorm": {
+    "used": true,
+    "path": "artifacts/final_vecnorm.pkl",
+    "norm_reward": false
+  },
+  "ppo_hyperparams": {
+    "gamma": 0.99,
+    "gae_lambda": 0.95,
+    "ent_coef": 0.01,
+    "learning_rate": 0.0003,
+    "n_steps": 512,
+    "batch_size": 64
+  },
+  "training": {
+    "timesteps": 1000000,
+    "seed": 0,
+    "opponent_mode": "curriculum",
+    "curriculum_stages": [
+      [0.0, 200000],
+      [0.2, 200000],
+      [0.5, 300000],
+      [0.8, 300000]
+    ]
+  },
+  "git_commit": null
+}

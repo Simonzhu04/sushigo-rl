@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sushigo-rl"
+version = "0.1.0"
+description = "2-player Sushi Go RL project"
+authors = [{name="Your Name"}]
+dependencies = [
+    "openai>=1.0.0",
+    "google-genai>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
