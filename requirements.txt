@@ -1,5 +1,8 @@
+numpy
+gymnasium
+matplotlib
 stable-baselines3
 sb3-contrib
 openai
 google-genai
-google-genai
+pytest

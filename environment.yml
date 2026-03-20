@@ -13,4 +13,3 @@ dependencies:
       - sb3-contrib
       - openai
       - google-genai
-      - google-genai

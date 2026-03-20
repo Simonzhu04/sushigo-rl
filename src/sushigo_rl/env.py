@@ -1,4 +1,4 @@
-"""Deterministic Gymnasium-style Sushi Go environment (2 players, 1 round)."""
+"""Deterministic Gymnasium-style Sushi Go environment (2 players, 3 rounds)."""
 
 from __future__ import annotations
 
@@ -30,25 +30,35 @@ class PolicyInput:
     opp_played: tuple[str, ...]
     turn: int
     hand_size: int
+    round_idx: int
+    num_rounds: int
+    my_pudding_count: int
+    opp_pudding_count: int
+    my_total_score: float
+    opp_total_score: float
     action_mask: np.ndarray
 
 
 @dataclass
-class RoundState:
-    """Mutable round state for a single episode."""
+class GameState:
+    """Mutable game state for a single episode (3 rounds)."""
 
     hands: list[list[str]]
-    played: list[list[str]]
-    turn: int = 0
+    played: list[list[str]]  # played cards for the CURRENT round (in play order)
+    pudding: list[list[str]]  # pudding cards accumulated across ALL rounds
+    turn: int = 0            # turn index within the current round
+    round_idx: int = 0       # 0..(num_rounds-1)
+    total_scores: tuple[float, float] = (0.0, 0.0)
     last_actions: tuple[int, int] | None = None
 
 
 class SushiGoEnv(gym.Env[np.ndarray, int]):
-    """2-player, 1-round Sushi Go environment with deterministic seeding."""
+    """2-player, 3-round Sushi Go environment with deterministic seeding."""
 
     def __init__(
         self,
         hand_size: int = rules.HAND_SIZE,
+        num_rounds: int = 3,
         opponent_policy: OpponentPolicy | None = None,
         opponent_sampler: OpponentSampler | None = None,
         fixed_episode_seed: int | None = None,
@@ -57,6 +67,8 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
     ) -> None:
         if hand_size <= 0:
             raise ValueError("hand_size must be positive")
+        if num_rounds <= 0:
+            raise ValueError("num_rounds must be positive")
         if hand_size > len(rules.build_deck()) // 2:
             raise ValueError("hand_size is too large for the fixed deck composition")
         if opponent_policy is not None and opponent_sampler is not None:
@@ -68,8 +80,9 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             )
 
         self.hand_size = hand_size
+        self.num_rounds = int(num_rounds)
         self._rng = np.random.default_rng()
-        self._state: RoundState | None = None
+        self._state: GameState | None = None
         self._base_opponent_policy: OpponentPolicy = opponent_policy or self._default_opponent_policy
         self._opponent_sampler = opponent_sampler
         self._episode_opponent_policy: OpponentPolicy = self._base_opponent_policy
@@ -80,15 +93,32 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
 
         num_card_types = len(rules.CARD_TYPES)
         slot_width = len(HAND_SLOT_TYPES)
-        obs_size = (num_card_types * 3) + (self.hand_size * slot_width) + 5
+        # obs_size = (num_card_types * 3) + (self.hand_size * slot_width) + 5
+        # low = np.zeros(obs_size, dtype=np.float32)
+        # scalar_high = np.array(
+        #     [
+        #         float(self.hand_size),  # turn
+        #         float(self.hand_size),  # current_hand_size
+        #         float(self.hand_size),  # my_unpaired_wasabi
+        #         float(self.hand_size * 3),  # my_maki_icons
+        #         float(self.hand_size * 3),  # opp_maki_icons
+        #     ],
+        #     dtype=np.float32,
+        # )
+        obs_size = (num_card_types * 3) + (self.hand_size * slot_width) + 10
         low = np.zeros(obs_size, dtype=np.float32)
         scalar_high = np.array(
             [
-                float(self.hand_size),  # turn
-                float(self.hand_size),  # current_hand_size
-                float(self.hand_size),  # my_unpaired_wasabi
-                float(self.hand_size * 3),  # my_maki_icons
-                float(self.hand_size * 3),  # opp_maki_icons
+                float(self.hand_size),          # turn
+                float(self.hand_size),          # current_hand_size
+                float(self.hand_size),          # my_unpaired_wasabi
+                float(self.hand_size * 3),      # my_maki_icons
+                float(self.hand_size * 3),      # opp_maki_icons
+                float(self.num_rounds - 1),     # round_idx
+                float(self.hand_size * self.num_rounds),  # my_pudding_count
+                float(self.hand_size * self.num_rounds),  # opp_pudding_count
+                float(100.0),                   # my_total_score
+                float(100.0),                   # opp_total_score
             ],
             dtype=np.float32,
         )
@@ -106,32 +136,32 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             shape=(obs_size,),
             dtype=np.float32,
         )
-        self.action_space = spaces.Discrete(self.hand_size)
+        self.max_hand = self.hand_size
+        self.action_dim = self.max_hand + self.max_hand * (self.max_hand - 1)  # 10 + 10*9 = 100
+        self.action_space = spaces.Discrete(self.action_dim)
 
     def reset(
         self,
         seed: int | None = None,
         options: dict[str, Any] | None = None,
     ) -> tuple[np.ndarray, dict[str, Any]]:
-        """Reset the round and return (obs, info)."""
+        """Reset the game and return (obs, info)."""
         del options
         if self._fixed_episode_seed is not None:
             self._rng = np.random.default_rng(self._fixed_episode_seed)
         elif seed is not None:
             self._rng = np.random.default_rng(seed)
 
-        deck = np.array(rules.build_deck(), dtype=object)
-        shuffled = deck[self._rng.permutation(deck.size)].tolist()
-
-        hand0 = shuffled[: self.hand_size]
-        hand1 = shuffled[self.hand_size : 2 * self.hand_size]
-
-        self._state = RoundState(
-            hands=[hand0, hand1],
+        self._state = GameState(
+            hands=[[], []],
             played=[[], []],
+            pudding=[[], []],
             turn=0,
+            round_idx=0,
+            total_scores=(0.0, 0.0),
             last_actions=None,
         )
+        self._start_round()
         self._episode_opponent_policy = (
             self._opponent_sampler(self._rng) if self._opponent_sampler is not None else self._base_opponent_policy
         )
@@ -146,7 +176,7 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         """Resolve one simultaneous turn and return Gymnasium-style outputs."""
         state = self._require_state()
-        if state.turn >= self.hand_size:
+        if state.round_idx == self.num_rounds - 1 and state.turn >= self.hand_size:
             raise RuntimeError("Episode has already terminated. Call reset().")
 
         my_mask = self.action_mask(player_index=0)
@@ -170,29 +200,61 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             )
         self._validate_action(opp_action, opp_mask)
 
-        my_card = state.hands[0].pop(int(action))
-        opp_card = state.hands[1].pop(opp_action)
-        state.played[0].append(my_card)
-        state.played[1].append(opp_card)
-        state.last_actions = (int(action), opp_action)
+        my_action_description = self.describe_action(int(action), state.hands[0], hand_size=self.hand_size)
+        opp_action_description = self.describe_action(int(opp_action), state.hands[1], hand_size=self.hand_size)
+
+        # Apply simultaneous actions (may be chopsticks actions)
+        self._apply_player_action(0, int(action))
+        self._apply_player_action(1, int(opp_action))
+        state.last_actions = (int(action), int(opp_action))
 
         # Remaining cards are swapped after simultaneous card resolution.
         state.hands[0], state.hands[1] = state.hands[1], state.hands[0]
         state.turn += 1
 
-        terminated = state.turn == self.hand_size
         truncated = False
 
-        if terminated:
-            my_score, opp_score = rules.score_round(state.played[0], state.played[1])
-            reward = float(my_score - opp_score)
+        round_ended = state.turn == self.hand_size
+        if round_ended:
+            # Score this round and accumulate.
+            round_my, round_opp = rules.score_round(state.played[0], state.played[1])
+            total_my = float(state.total_scores[0] + round_my)
+            total_opp = float(state.total_scores[1] + round_opp)
+            state.total_scores = (total_my, total_opp)
+
+            if state.round_idx < self.num_rounds - 1:
+                # Start next round (sparse reward: 0 until terminal).
+                state.round_idx += 1
+                state.turn = 0
+                state.played = [[], []]
+                state.last_actions = None
+                self._start_round()
+
+                my_score = 0.0
+                opp_score = 0.0
+                reward = 0.0
+                terminated = False
+            else:
+                # Terminal after final round.
+                # my_score = total_my
+                # opp_score = total_opp
+                # Add end-of-game pudding scoring (accumulated across rounds).
+                my_p = rules.count_pudding(state.pudding[0])
+                opp_p = rules.count_pudding(state.pudding[1])
+                my_p_score, opp_p_score = rules.score_pudding(my_p, opp_p, penalty_for_last=False)
+                my_score = total_my + my_p_score
+                opp_score = total_opp + opp_p_score
+                reward = float(my_score - opp_score)
+                terminated = True
         else:
             my_score = 0.0
             opp_score = 0.0
             reward = 0.0
+            terminated = False
 
         obs = self._observation()
         info = self._build_info(my_score=float(my_score), opp_score=float(opp_score), terminal=terminated)
+        info["last_action_descriptions"] = (my_action_description, opp_action_description)
         return obs, reward, terminated, truncated, info
 
     def set_opponent_policy(self, opponent_policy: OpponentPolicy) -> None:
@@ -201,21 +263,162 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
         self._base_opponent_policy = opponent_policy
         self._episode_opponent_policy = opponent_policy
 
+    @staticmethod
+    def decode_action_index(action: int, hand_size: int = rules.HAND_SIZE) -> tuple[bool, int, int | None]:
+        """Decode a flat action index into single-card or chopsticks form."""
+        if action < hand_size:
+            return False, int(action), None
+        k = int(action) - hand_size
+        i = k // (hand_size - 1)
+        j = k % (hand_size - 1)
+        if j >= i:
+            j += 1
+        return True, int(i), int(j)
+
+    @staticmethod
+    def cards_for_action(
+        action: int,
+        hand: Sequence[str],
+        hand_size: int = rules.HAND_SIZE,
+    ) -> tuple[str, ...]:
+        """Return the ordered card(s) selected by an action for the given hand."""
+        use_chopsticks, i, j = SushiGoEnv.decode_action_index(action, hand_size=hand_size)
+        if i < 0 or i >= len(hand):
+            return ("__invalid__",)
+        if not use_chopsticks:
+            return (str(hand[i]),)
+        if j is None or j < 0 or j >= len(hand):
+            return ("__invalid__",)
+        return (str(hand[i]), str(hand[j]))
+
+    @staticmethod
+    def describe_action(
+        action: int,
+        hand: Sequence[str],
+        hand_size: int = rules.HAND_SIZE,
+    ) -> str:
+        """Return a human-readable label for a legal or candidate action."""
+        use_chopsticks, i, j = SushiGoEnv.decode_action_index(action, hand_size=hand_size)
+        cards = SushiGoEnv.cards_for_action(action, hand, hand_size=hand_size)
+        if not use_chopsticks:
+            card = cards[0]
+            return f"idx {i} -> {card}"
+        if j is None or len(cards) < 2:
+            return f"idx {action} -> invalid chopsticks action"
+        return f"idx {action} -> chopsticks({i}:{cards[0]}, {j}:{cards[1]})"
+
+    @staticmethod
+    def observation_from_policy_input(
+        policy_input: PolicyInput,
+        hand_size: int = rules.HAND_SIZE,
+    ) -> np.ndarray:
+        """Reconstruct an observation vector from a PolicyInput snapshot."""
+        return SushiGoEnv.encode_observation(
+            my_played=policy_input.my_played,
+            opp_played=policy_input.opp_played,
+            my_hand=policy_input.hand,
+            turn=policy_input.turn,
+            current_hand_size=policy_input.hand_size,
+            round_idx=policy_input.round_idx,
+            my_pudding_count=policy_input.my_pudding_count,
+            opp_pudding_count=policy_input.opp_pudding_count,
+            my_total_score=policy_input.my_total_score,
+            opp_total_score=policy_input.opp_total_score,
+            hand_size=hand_size,
+        )
+
+    def _decode_action(self, action: int) -> tuple[bool, int, int | None]:
+        """Decode action into (use_chopsticks, i, j)."""
+        return self.decode_action_index(action, hand_size=self.max_hand)
+
+    def _apply_player_action(self, player_index: int, action: int) -> None:
+        """Apply a (possibly chopsticks) action for player_index."""
+        state = self._require_state()
+        use_chop, i, j = self._decode_action(action)
+        hand = state.hands[player_index]
+
+        def _play_card(card: str) -> None:
+            state.played[player_index].append(card)
+            if card == rules.PUDDING:
+                state.pudding[player_index].append(card)
+
+        if not use_chop:
+            card = hand.pop(i)
+            _play_card(card)
+            return
+
+        # chopsticks action requires chopsticks on table and at least 2 cards in hand
+        if rules.CHOPSTICKS not in state.played[player_index]:
+            raise ValueError("Chopsticks action chosen but no chopsticks on table")
+        if j is None or i == j:
+            raise ValueError("Invalid chopsticks action")
+
+        # Pop two cards in a safe order, but keep the play order as (i then j)
+        if i < j:
+            first = hand.pop(i)
+            second = hand.pop(j - 1)  # index shifted after popping i
+        else:
+            second = hand.pop(j)
+            first = hand.pop(i - 1)   # index shifted after popping j
+
+        # remove one chopsticks from table, return it to hand
+        state.played[player_index].remove(rules.CHOPSTICKS)
+        hand.append(rules.CHOPSTICKS)
+
+        _play_card(first)
+        _play_card(second)
+
     def action_mask(self, player_index: int = 0) -> np.ndarray:
         """Return a fixed-size boolean action mask for the selected player."""
         state = self._require_state()
         if player_index not in (0, 1):
             raise ValueError("player_index must be 0 or 1")
 
-        legal = len(state.hands[player_index])
-        mask = np.zeros(self.hand_size, dtype=np.bool_)
-        mask[:legal] = True
+        hand_len = len(state.hands[player_index])
+        mask = np.zeros(self.action_dim, dtype=np.bool_)
+
+        # Single-card actions: indices < hand_len
+        mask[: min(hand_len, self.max_hand)] = True
+
+        # Chopsticks double actions (ordered pairs i->j, i!=j)
+        has_chopsticks = rules.CHOPSTICKS in state.played[player_index]
+        if has_chopsticks and hand_len >= 2:
+            for i in range(hand_len):
+                for j in range(hand_len):
+                    if i == j:
+                        continue
+                    jprime = j if j < i else j - 1
+                    a = self.max_hand + i * (self.max_hand - 1) + jprime
+                    mask[a] = True
+
         return mask
 
     def action_masks(self) -> np.ndarray:
-        """Return the learning-agent mask in sb3-contrib compatible format."""
-        return self.action_mask(player_index=0)
+        return self.action_mask(player_index=0)[None, :]
 
+
+    def _start_round(self) -> None:
+        """Shuffle and deal fresh hands for the current round."""
+        deck = np.array(rules.build_deck(), dtype=object)
+        shuffled = deck[self._rng.permutation(deck.size)].tolist()
+
+        hand0 = shuffled[: self.hand_size]
+        hand1 = shuffled[self.hand_size : 2 * self.hand_size]
+
+        state = self._require_state()
+        state.hands = [hand0, hand1]
+
+    # def _observation(self) -> np.ndarray:
+    #     state = self._require_state()
+    #     return self.encode_observation(
+    #         my_played=state.played[0],
+    #         opp_played=state.played[1],
+    #         my_hand=state.hands[0],
+    #         turn=state.turn,
+    #         current_hand_size=len(state.hands[0]),
+    #         hand_size=self.hand_size,
+    #     )
+    
     def _observation(self) -> np.ndarray:
         state = self._require_state()
         return self.encode_observation(
@@ -224,6 +427,11 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             my_hand=state.hands[0],
             turn=state.turn,
             current_hand_size=len(state.hands[0]),
+            round_idx=state.round_idx,
+            my_pudding_count=rules.count_pudding(state.pudding[0]),
+            opp_pudding_count=rules.count_pudding(state.pudding[1]),
+            my_total_score=float(state.total_scores[0]),
+            opp_total_score=float(state.total_scores[1]),
             hand_size=self.hand_size,
         )
 
@@ -239,6 +447,11 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
         my_hand: Sequence[str],
         turn: int,
         current_hand_size: int,
+        round_idx: int,
+        my_pudding_count: int,
+        opp_pudding_count: int,
+        my_total_score: float,
+        opp_total_score: float,
         hand_size: int = rules.HAND_SIZE,
     ) -> np.ndarray:
         """Encode observation features into the fixed-size float32 vector."""
@@ -254,6 +467,17 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
                 raise ValueError(f"Unknown card for hand slot encoding: {card}")
             hand_slots[slot_idx, HAND_SLOT_TO_INDEX[card]] = 1.0
 
+        # scalars = np.array(
+        #     [
+        #         float(turn),
+        #         float(current_hand_size),
+        #         float(rules.count_available_wasabi(my_played)),
+        #         float(rules.count_maki_icons(my_played)),
+        #         float(rules.count_maki_icons(opp_played)),
+        #     ],
+        #     dtype=np.float32,
+        # )
+        
         scalars = np.array(
             [
                 float(turn),
@@ -261,6 +485,11 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
                 float(rules.count_available_wasabi(my_played)),
                 float(rules.count_maki_icons(my_played)),
                 float(rules.count_maki_icons(opp_played)),
+                float(round_idx),
+                float(my_pudding_count),
+                float(opp_pudding_count),
+                float(my_total_score),
+                float(opp_total_score),
             ],
             dtype=np.float32,
         )
@@ -280,7 +509,8 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
         """Decode observation vector into interpretable feature groups."""
         n = len(rules.CARD_TYPES)
         slot_width = len(HAND_SLOT_TYPES)
-        expected_size = (n * 3) + (hand_size * slot_width) + 5
+        # expected_size = (n * 3) + (hand_size * slot_width) + 5
+        expected_size = (n * 3) + (hand_size * slot_width) + 10
         if obs.shape != (expected_size,):
             raise ValueError(f"Unexpected observation shape {obs.shape}, expected {(expected_size,)}")
 
@@ -296,11 +526,21 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             "my_hand_counts": obs[2 * n : 3 * n].astype(np.float32),
             "my_hand_slots_one_hot": slot_one_hot,
             "my_hand_slots": slot_cards,
+            # "turn": float(obs[slot_end]),
+            # "current_hand_size": float(obs[slot_end + 1]),
+            # "my_unpaired_wasabi": float(obs[slot_end + 2]),
+            # "my_maki_icons": float(obs[slot_end + 3]),
+            # "opp_maki_icons": float(obs[slot_end + 4]),
             "turn": float(obs[slot_end]),
             "current_hand_size": float(obs[slot_end + 1]),
             "my_unpaired_wasabi": float(obs[slot_end + 2]),
             "my_maki_icons": float(obs[slot_end + 3]),
             "opp_maki_icons": float(obs[slot_end + 4]),
+            "round_idx": float(obs[slot_end + 5]),
+            "my_pudding_count": float(obs[slot_end + 6]),
+            "opp_pudding_count": float(obs[slot_end + 7]),
+            "my_total_score": float(obs[slot_end + 8]),
+            "opp_total_score": float(obs[slot_end + 9]),
         }
 
     def _policy_input_for_player(self, player_index: int, mask: np.ndarray) -> PolicyInput:
@@ -311,6 +551,12 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             opp_played=tuple(state.played[1 - player_index]),
             turn=state.turn,
             hand_size=len(state.hands[player_index]),
+            round_idx=state.round_idx,
+            num_rounds=self.num_rounds,
+            my_pudding_count=rules.count_pudding(state.pudding[player_index]),
+            opp_pudding_count=rules.count_pudding(state.pudding[1 - player_index]),
+            my_total_score=float(state.total_scores[player_index]),
+            opp_total_score=float(state.total_scores[1 - player_index]),
             action_mask=mask.copy(),
         )
 
@@ -321,6 +567,9 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             "my_score": my_score,
             "opp_score": opp_score,
             "turn": state.turn,
+            "round_idx": state.round_idx,
+            "num_rounds": self.num_rounds,
+            "total_scores": state.total_scores,
             "hand_size": self.hand_size,
             "last_actions": state.last_actions,
             "action_mask": self.action_mask(player_index=0),
@@ -328,6 +577,8 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             "opp_played": tuple(state.played[1]),
             "my_hand": tuple(state.hands[0]),
             "opp_hand": tuple(state.hands[1]),
+            "my_pudding": rules.count_pudding(state.pudding[0]),
+            "opp_pudding": rules.count_pudding(state.pudding[1]),
         }
 
         if terminal:
@@ -339,7 +590,7 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
     @staticmethod
     def _validate_action(action: int, mask: np.ndarray) -> None:
         if not isinstance(action, (int, np.integer)):
-            raise ValueError(f"Action must be an int index into the hand, got: {action!r}")
+            raise ValueError(f"Action must be an int index into the action space, got: {action!r}")
         if action < 0 or action >= len(mask) or not bool(mask[int(action)]):
             raise ValueError(f"Illegal action index: {action}")
 
@@ -360,6 +611,9 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             "actor": actor_label,
             "player_index": player_index,
             "turn": state.turn,
+            "round_idx": state.round_idx,
+            "num_rounds": self.num_rounds,
+            "total_scores": state.total_scores,
             "hand_size": len(state.hands[player_index]),
             "mask": mask.astype(np.int8).tolist(),
             "action": action,
@@ -412,7 +666,7 @@ class SushiGoEnv(gym.Env[np.ndarray, int]):
             raise ValueError("No legal actions available for opponent")
         return int(self._rng.choice(legal_actions))
 
-    def _require_state(self) -> RoundState:
+    def _require_state(self) -> GameState:
         if self._state is None:
             raise RuntimeError("Environment is not initialized. Call reset().")
         return self._state

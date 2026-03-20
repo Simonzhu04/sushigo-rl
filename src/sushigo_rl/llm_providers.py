@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - dependency optional in tests
 
 
 DEFAULT_OPENAI_MODEL = "gpt-5.2"
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 
 
 @dataclass(frozen=True)

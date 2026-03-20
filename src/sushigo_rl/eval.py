@@ -183,15 +183,8 @@ def _make_model_opponent_policy(
     vecnorm: VecNormalize | None,
     hand_size: int,
 ) -> OpponentPolicy:
-    def _policy(policy_input) -> int:
-        opp_obs = SushiGoEnv.encode_observation(
-            my_played=policy_input.my_played,
-            opp_played=policy_input.opp_played,
-            my_hand=policy_input.hand,
-            turn=policy_input.turn,
-            current_hand_size=policy_input.hand_size,
-            hand_size=hand_size,
-        )
+    def _policy(policy_input: PolicyInput) -> int:
+        opp_obs = SushiGoEnv.observation_from_policy_input(policy_input, hand_size=hand_size)
         opp_obs_input = _normalize_obs(vecnorm, opp_obs)
         action, _ = model.predict(
             opp_obs_input,
@@ -253,7 +246,7 @@ def run_matchup(
         info: dict[str, object] = {}
 
         while not (terminated or truncated):
-            action_mask = env.action_masks()
+            action_mask = env.action_mask(player_index=0)
             policy_input = env._policy_input_for_player(player_index=0, mask=action_mask)
             action = player_action_fn(obs, action_mask, policy_input)
             obs, reward, terminated, truncated, info = env.step(action)
@@ -272,22 +265,26 @@ def run_matchup(
     return _build_summary(label=label, my_scores=my_scores, opp_scores=opp_scores)
 
 
-def _parse_action_sequence(spec: str | None, hand_size: int) -> list[int]:
+def _parse_action_sequence(spec: str | None, hand_size: int, num_rounds: int) -> list[int]:
+    total_turns = hand_size * num_rounds
     if spec is None:
-        return [0] * hand_size
+        return [0] * total_turns
 
     parts = [part.strip() for part in spec.split(",") if part.strip()]
     if not parts:
         raise ValueError("--repro-actions cannot be empty")
 
     actions = [int(part) for part in parts]
-    if len(actions) < hand_size:
-        actions.extend([0] * (hand_size - len(actions)))
-    return actions[:hand_size]
+    if len(actions) < total_turns:
+        raise ValueError(
+            f"--repro-actions must provide at least {total_turns} actions "
+            f"(got {len(actions)})"
+        )
+    return actions[:total_turns]
 
 
-def _run_fixed_trajectory(seed: int, hand_size: int, actions: list[int]) -> list[dict[str, object]]:
-    env = SushiGoEnv(hand_size=hand_size)
+def _run_fixed_trajectory(seed: int, hand_size: int, num_rounds: int, actions: list[int]) -> list[dict[str, object]]:
+    env = SushiGoEnv(hand_size=hand_size, num_rounds=num_rounds)
     obs, _ = env.reset(seed=seed)
     trajectory: list[dict[str, object]] = []
 
@@ -296,7 +293,12 @@ def _run_fixed_trajectory(seed: int, hand_size: int, actions: list[int]) -> list
     step_idx = 0
 
     while not (terminated or truncated):
-        action_mask = env.action_masks()
+        action_mask = env.action_mask(player_index=0)
+        if step_idx >= len(actions):
+            raise ValueError(
+                f"Repro action sequence ended early at step {step_idx}; "
+                f"need more actions for this trajectory"
+            )
         action = actions[step_idx]
         if action < 0 or action >= len(action_mask) or not bool(action_mask[action]):
             raise ValueError(f"Repro action {action} is illegal at step {step_idx} with mask={action_mask.tolist()}")
@@ -309,12 +311,15 @@ def _run_fixed_trajectory(seed: int, hand_size: int, actions: list[int]) -> list
                 "terminated": bool(terminated),
                 "truncated": bool(truncated),
                 "turn": int(info["turn"]),
+                "round_idx": int(info["round_idx"]),
                 "my_score": float(info["my_score"]),
                 "opp_score": float(info["opp_score"]),
                 "my_played": tuple(info["my_played"]),
                 "opp_played": tuple(info["opp_played"]),
                 "my_hand": tuple(info["my_hand"]),
                 "opp_hand": tuple(info["opp_hand"]),
+                "my_pudding": int(info["my_pudding"]),
+                "opp_pudding": int(info["opp_pudding"]),
                 "action_mask": tuple(bool(v) for v in info["action_mask"].tolist()),
                 "last_actions": info["last_actions"],
             }
@@ -325,10 +330,10 @@ def _run_fixed_trajectory(seed: int, hand_size: int, actions: list[int]) -> list
     return trajectory
 
 
-def run_reproducibility_sanity_check(seed: int, hand_size: int, actions: list[int]) -> None:
+def run_reproducibility_sanity_check(seed: int, hand_size: int, num_rounds: int, actions: list[int]) -> None:
     """Assert deterministic trajectories for identical seed + action sequence."""
-    traj_a = _run_fixed_trajectory(seed=seed, hand_size=hand_size, actions=actions)
-    traj_b = _run_fixed_trajectory(seed=seed, hand_size=hand_size, actions=actions)
+    traj_a = _run_fixed_trajectory(seed=seed, hand_size=hand_size, num_rounds=num_rounds, actions=actions)
+    traj_b = _run_fixed_trajectory(seed=seed, hand_size=hand_size, num_rounds=num_rounds, actions=actions)
 
     if len(traj_a) != len(traj_b):
         raise AssertionError("Trajectory lengths differ across repeated runs")
@@ -342,12 +347,15 @@ def run_reproducibility_sanity_check(seed: int, hand_size: int, actions: list[in
             "terminated",
             "truncated",
             "turn",
+            "round_idx",
             "my_score",
             "opp_score",
             "my_played",
             "opp_played",
             "my_hand",
             "opp_hand",
+            "my_pudding",
+            "opp_pudding",
             "action_mask",
             "last_actions",
         ):
@@ -384,8 +392,14 @@ def main() -> None:
             vecnorm = _load_vecnormalize(args.vecnorm_path, args.hand_size)
 
     if args.repro_check:
-        action_sequence = _parse_action_sequence(args.repro_actions, args.hand_size)
-        run_reproducibility_sanity_check(seed=args.repro_seed, hand_size=args.hand_size, actions=action_sequence)
+        num_rounds = SushiGoEnv(hand_size=args.hand_size).num_rounds
+        action_sequence = _parse_action_sequence(args.repro_actions, args.hand_size, num_rounds)
+        run_reproducibility_sanity_check(
+            seed=args.repro_seed,
+            hand_size=args.hand_size,
+            num_rounds=num_rounds,
+            actions=action_sequence,
+        )
 
     if args.opponents in {"random", "both"}:
         assert model is not None

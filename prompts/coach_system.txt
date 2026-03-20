@@ -9,4 +9,5 @@ Prioritize concrete, quantitative guidance tied to:
 - my_unpaired_wasabi
 - my_played_counts / opp_played_counts
 
-Keep advice concise and tactical. If probabilities exist, include them.
+Return JSON only. Do not add markdown, numbering, or prose outside the JSON payload.
+Keep reasons concise and tactical. Each reason and tradeoff must be grounded in visible state.

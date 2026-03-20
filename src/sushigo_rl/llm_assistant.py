@@ -13,9 +13,18 @@ import re
 from typing import Any, Callable, Sequence
 
 import numpy as np
-import torch
-from sb3_contrib import MaskablePPO
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+try:
+    import torch
+except Exception:
+    torch = None
+
+try:
+    from sb3_contrib import MaskablePPO
+    from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+except Exception:
+    MaskablePPO = None
+    DummyVecEnv = None
+    VecNormalize = None
 
 from sushigo_rl import rules
 from sushigo_rl.env import PolicyInput, SushiGoEnv
@@ -46,6 +55,10 @@ class PolicyAdvisor:
         hand_size: int = rules.HAND_SIZE,
         vecnorm_path: Path | None = None,
     ) -> None:
+        if MaskablePPO is None or DummyVecEnv is None or VecNormalize is None or torch is None:
+            raise ImportError(
+                "PolicyAdvisor requires optional training dependencies (torch, sb3-contrib, stable-baselines3)."
+            )
         model_base = model_path.with_suffix("") if model_path.suffix == ".zip" else model_path
         self.model = MaskablePPO.load(str(model_base))
         self.hand_size = hand_size
@@ -70,14 +83,7 @@ class PolicyAdvisor:
         return int(action)
 
     def predict_action_for_policy_input(self, policy_input: PolicyInput, deterministic: bool = True) -> int:
-        obs = SushiGoEnv.encode_observation(
-            my_played=policy_input.my_played,
-            opp_played=policy_input.opp_played,
-            my_hand=policy_input.hand,
-            turn=policy_input.turn,
-            current_hand_size=policy_input.hand_size,
-            hand_size=self.hand_size,
-        )
+        obs = SushiGoEnv.observation_from_policy_input(policy_input, hand_size=self.hand_size)
         return self.predict_action(obs=obs, action_mask=policy_input.action_mask, deterministic=deterministic)
 
     def action_recommendations(
@@ -94,11 +100,18 @@ class PolicyAdvisor:
         return [
             {
                 "action_index": int(idx),
-                "card": str(hand_cards[idx]) if idx < len(hand_cards) else "__out_of_range__",
+                "card": self._action_card_label(int(idx), hand_cards),
+                "action_label": SushiGoEnv.describe_action(int(idx), hand_cards, hand_size=self.hand_size),
                 "probability": float(probs[idx]),
             }
             for idx in top_actions
         ]
+
+    def _action_card_label(self, action_index: int, hand_cards: Sequence[str]) -> str:
+        cards = SushiGoEnv.cards_for_action(action_index, hand_cards, hand_size=self.hand_size)
+        if len(cards) == 1:
+            return cards[0]
+        return "+".join(cards)
 
     def _action_probabilities(self, obs: np.ndarray, action_mask: np.ndarray) -> np.ndarray:
         obs_input = self._normalize_obs(obs).astype(np.float32, copy=False)
@@ -182,6 +195,12 @@ class LLMAssistant:
             current_hand=my_hand,
             turn=turn,
             hand_size=env.hand_size,
+            round_idx=int(info["round_idx"]),
+            num_rounds=int(info["num_rounds"]),
+            my_pudding_count=int(info["my_pudding"]),
+            opp_pudding_count=int(info["opp_pudding"]),
+            my_total_score=float(info["my_score"]) if "my_breakdown" in info else float(info["total_scores"][0]),
+            opp_total_score=float(info["opp_score"]) if "opp_breakdown" in info else float(info["total_scores"][1]),
             action_mask=action_mask,
             topk=topk,
         )
@@ -199,6 +218,12 @@ class LLMAssistant:
             current_hand=list(policy_input.hand),
             turn=int(policy_input.turn),
             hand_size=hand_size,
+            round_idx=int(policy_input.round_idx),
+            num_rounds=int(policy_input.num_rounds),
+            my_pudding_count=int(policy_input.my_pudding_count),
+            opp_pudding_count=int(policy_input.opp_pudding_count),
+            my_total_score=float(policy_input.my_total_score),
+            opp_total_score=float(policy_input.opp_total_score),
             action_mask=np.asarray(policy_input.action_mask, dtype=np.bool_),
             topk=topk,
         )
@@ -256,9 +281,12 @@ class LLMAssistant:
             fallback_text=fallback_text,
             cache_key=cache_key,
         )
-        if not self._coach_response_is_valid(text=text, recommendations=recommendations):
-            text = fallback_text
-            used_fallback = True
+        text, render_fallback = self._render_coach_response(
+            raw_text=text,
+            recommendations=recommendations,
+            state_summary=state_summary,
+        )
+        used_fallback = used_fallback or render_fallback
         self._log_response(
             mode="coach",
             state_summary=state_summary,
@@ -314,6 +342,12 @@ class LLMAssistant:
         )
         return text
 
+    @staticmethod
+    def _action_hand_size(action_mask: np.ndarray, fallback: int) -> int:
+        action_dim = int(len(action_mask))
+        inferred = int(round(action_dim ** 0.5))
+        return inferred if inferred > 0 and inferred * inferred == action_dim else fallback
+
     def _summary_from_components(
         self,
         my_played: list[str],
@@ -321,6 +355,12 @@ class LLMAssistant:
         current_hand: list[str],
         turn: int,
         hand_size: int,
+        round_idx: int,
+        num_rounds: int,
+        my_pudding_count: int,
+        opp_pudding_count: int,
+        my_total_score: float,
+        opp_total_score: float,
         action_mask: np.ndarray,
         topk: int,
     ) -> dict[str, Any]:
@@ -330,6 +370,11 @@ class LLMAssistant:
             my_hand=current_hand,
             turn=turn,
             current_hand_size=len(current_hand),
+            round_idx=round_idx,
+            my_pudding_count=my_pudding_count,
+            opp_pudding_count=opp_pudding_count,
+            my_total_score=my_total_score,
+            opp_total_score=opp_total_score,
             hand_size=hand_size,
         )
         legal_indices = [int(idx) for idx in np.flatnonzero(action_mask)]
@@ -341,12 +386,19 @@ class LLMAssistant:
         )
         return {
             "turn": int(turn),
+            "round_idx": int(round_idx),
+            "num_rounds": int(num_rounds),
+            "hand_size": int(hand_size),
             "cards_left": int(len(current_hand)),
             "my_played_counts": {card: int(count) for card, count in rules.count_cards(my_played).items()},
             "opp_played_counts": {card: int(count) for card, count in rules.count_cards(opp_played).items()},
             "my_maki_icons": int(rules.count_maki_icons(my_played)),
             "opp_maki_icons": int(rules.count_maki_icons(opp_played)),
             "my_unpaired_wasabi": int(rules.count_available_wasabi(my_played)),
+            "my_pudding_count": int(my_pudding_count),
+            "opp_pudding_count": int(opp_pudding_count),
+            "my_total_score": float(my_total_score),
+            "opp_total_score": float(opp_total_score),
             "current_hand": [str(card) for card in current_hand],
             "action_mask_indices": legal_indices,
             "agent_recommendation": recommendations,
@@ -359,19 +411,24 @@ class LLMAssistant:
         current_hand: Sequence[str],
         topk: int,
     ) -> list[dict[str, Any]]:
+        action_hand_size = self._action_hand_size(action_mask, fallback=max(len(current_hand), rules.HAND_SIZE))
         if self.policy_advisor is None:
             legal = np.flatnonzero(action_mask).tolist()
             if not legal:
                 return []
             prob = 1.0 / float(len(legal))
-            return [
-                {
-                    "action_index": int(idx),
-                    "card": str(current_hand[idx]) if idx < len(current_hand) else "__out_of_range__",
-                    "probability": float(prob),
-                }
-                for idx in legal[: max(0, topk)]
-            ]
+            recommendations: list[dict[str, Any]] = []
+            for idx in legal[: max(0, topk)]:
+                cards = SushiGoEnv.cards_for_action(int(idx), current_hand, hand_size=action_hand_size)
+                recommendations.append(
+                    {
+                        "action_index": int(idx),
+                        "card": cards[0] if len(cards) == 1 else "+".join(cards),
+                        "action_label": SushiGoEnv.describe_action(int(idx), current_hand, hand_size=action_hand_size),
+                        "probability": float(prob),
+                    }
+                )
+            return recommendations
         return self.policy_advisor.action_recommendations(
             obs=obs,
             action_mask=action_mask,
@@ -434,20 +491,34 @@ class LLMAssistant:
 
     def _fallback_explain(self, state_summary: dict[str, Any], chosen_action: int, topk: int) -> str:
         hand = state_summary.get("current_hand", [])
-        card_name = hand[chosen_action] if 0 <= chosen_action < len(hand) else "unknown"
+        hand_size = int(state_summary.get("hand_size", rules.HAND_SIZE))
+        action_label = SushiGoEnv.describe_action(int(chosen_action), hand, hand_size=hand_size)
+        chosen_cards = SushiGoEnv.cards_for_action(int(chosen_action), hand, hand_size=hand_size)
+        chosen_card = chosen_cards[0] if len(chosen_cards) == 1 else "+".join(chosen_cards)
         top = state_summary.get("agent_recommendation", [])[: max(0, topk)]
         lead = top[0] if top else None
         lead_text = "no legal recommendation available"
         if lead is not None:
             lead_text = (
-                f"top suggestion was index {lead['action_index']} ({lead['card']}) "
+                f"top suggestion was {lead.get('action_label', lead['card'])} "
                 f"with probability {lead['probability']:.3f}"
             )
+        alternative = self._best_alternative(top, skip_action_index=int(chosen_action))
+        if alternative is None:
+            tradeoff_text = "No meaningful alternative remained among the top legal moves."
+        else:
+            alt_label = str(alternative.get("action_label", f"idx {alternative['action_index']} -> {alternative['card']}"))
+            alt_reason = self._card_tradeoff(str(alternative["card"]), state_summary).rstrip(".")
+            tradeoff_text = f"Alternative {alt_label} instead {alt_reason}."
         alignment = "matches" if lead and int(lead["action_index"]) == int(chosen_action) else "differs from"
         return (
-            f"Agent played index {chosen_action} ({card_name}). This {alignment} the highest-ranked move: {lead_text}. "
-            f"Current maki race is {state_summary['my_maki_icons']} vs {state_summary['opp_maki_icons']}, and "
-            f"unpaired wasabi is {state_summary['my_unpaired_wasabi']}."
+            f"Move: {action_label}. Why: This {alignment} the highest-ranked move: {lead_text}. "
+            f"It favors the line where {self._card_tradeoff(chosen_card, state_summary).rstrip('.')}. "
+            f"Tradeoff: {tradeoff_text} "
+            f"Round {state_summary.get('round_idx', 0) + 1}/{state_summary.get('num_rounds', 1)} has "
+            f"maki race {state_summary['my_maki_icons']} vs {state_summary['opp_maki_icons']}, "
+            f"unpaired wasabi {state_summary['my_unpaired_wasabi']}, "
+            f"and pudding {state_summary.get('my_pudding_count', 0)} vs {state_summary.get('opp_pudding_count', 0)}."
         )
 
     def _fallback_coach(self, state_summary: dict[str, Any], topk: int) -> str:
@@ -455,53 +526,152 @@ class LLMAssistant:
         if not recommendations:
             return "No legal moves remain for this turn."
 
-        lines = ["Top moves (fallback coach):"]
-        for rank, rec in enumerate(recommendations, start=1):
-            tradeoff = self._card_tradeoff(str(rec["card"]), state_summary)
+        return self._format_coach_response(
+            state_summary=state_summary,
+            recommendations=recommendations,
+            details_by_action=None,
+        )
+
+    def _render_coach_response(
+        self,
+        raw_text: str,
+        recommendations: Sequence[dict[str, Any]],
+        state_summary: dict[str, Any],
+    ) -> tuple[str, bool]:
+        if not recommendations:
+            text = raw_text.strip()
+            return ("No legal moves remain for this turn.", text != "No legal moves remain for this turn.")
+
+        payload = self._parse_coach_payload(raw_text)
+        if payload is None:
+            return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+
+        allowed = {int(rec["action_index"]) for rec in recommendations}
+        details_by_action: dict[int, dict[str, str]] = {}
+        for item in payload:
+            if not isinstance(item, dict):
+                return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+            try:
+                action_index = int(item["action_index"])
+            except (KeyError, TypeError, ValueError):
+                return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+            if action_index not in allowed or action_index in details_by_action:
+                return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+            reason = self._clean_generated_text(item.get("reason", ""))
+            tradeoff = self._clean_generated_text(item.get("tradeoff", ""))
+            if not reason or not tradeoff:
+                return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+            details_by_action[action_index] = {"reason": reason, "tradeoff": tradeoff}
+
+        if set(details_by_action) != allowed:
+            return self._fallback_coach(state_summary=state_summary, topk=len(recommendations)), True
+
+        return (
+            self._format_coach_response(
+                state_summary=state_summary,
+                recommendations=recommendations,
+                details_by_action=details_by_action,
+            ),
+            False,
+        )
+
+    def _format_coach_response(
+        self,
+        state_summary: dict[str, Any],
+        recommendations: Sequence[dict[str, Any]],
+        details_by_action: dict[int, dict[str, str]] | None,
+    ) -> str:
+        lines = ["Top moves:"]
+        if state_summary.get("num_rounds", 1) > 1:
             lines.append(
-                f"{rank}) idx {rec['action_index']} -> {rec['card']} "
-                f"(p={rec['probability']:.3f}): {tradeoff}"
+                "Game state: "
+                f"round {state_summary.get('round_idx', 0) + 1}/{state_summary.get('num_rounds', 1)}, "
+                f"pudding {state_summary.get('my_pudding_count', 0)} vs {state_summary.get('opp_pudding_count', 0)}, "
+                f"score {state_summary.get('my_total_score', 0.0):.1f} vs {state_summary.get('opp_total_score', 0.0):.1f}."
+            )
+        for rank, rec in enumerate(recommendations, start=1):
+            action_index = int(rec["action_index"])
+            action_label = str(rec.get("action_label", f"idx {rec['action_index']} -> {rec['card']}"))
+            detail = None if details_by_action is None else details_by_action.get(action_index)
+            if detail is None:
+                reason = self._clean_generated_text(self._card_tradeoff(str(rec["card"]), state_summary))
+                tradeoff = self._fallback_tradeoff(
+                    action_index=action_index,
+                    recommendations=recommendations,
+                    state_summary=state_summary,
+                )
+            else:
+                reason = detail["reason"]
+                tradeoff = detail["tradeoff"]
+            lines.append(
+                f"{rank}) {action_label} (p={rec['probability']:.3f}): {self._ensure_sentence(reason)} "
+                f"Tradeoff: {self._ensure_sentence(tradeoff)}"
             )
         return "\n".join(lines)
 
     @staticmethod
-    def _coach_response_is_valid(text: str, recommendations: Sequence[dict[str, Any]]) -> bool:
-        if not recommendations:
-            return text.strip() == "No legal moves remain for this turn."
+    def _extract_json_snippet(text: str) -> str | None:
+        stripped = text.strip()
+        if not stripped:
+            return None
+        for opener, closer in (("[", "]"), ("{", "}")):
+            start = stripped.find(opener)
+            end = stripped.rfind(closer)
+            if start != -1 and end != -1 and end > start:
+                return stripped[start : end + 1]
+        return None
 
-        lower = text.lower()
-        if "p=n/a" in lower:
-            return False
+    def _parse_coach_payload(self, text: str) -> list[dict[str, Any]] | None:
+        snippet = self._extract_json_snippet(text)
+        if snippet is None:
+            return None
+        try:
+            payload = json.loads(snippet)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(payload, dict):
+            payload = payload.get("recommendations")
+        if not isinstance(payload, list):
+            return None
+        return payload
 
-        lines = [line.strip().lower() for line in text.splitlines() if "idx" in line]
-        if len(lines) != len(recommendations):
-            return False
+    @staticmethod
+    def _clean_generated_text(value: Any) -> str:
+        text = str(value).strip()
+        text = re.sub(r"\s+", " ", text)
+        return text.strip(" -\n\t\"'")
 
-        allowed = {int(rec["action_index"]) for rec in recommendations}
-        line_by_idx: dict[int, str] = {}
-        for line in lines:
-            match = re.search(r"idx\s*(\d+)", line)
-            if match is None:
-                return False
-            idx = int(match.group(1))
-            if idx not in allowed:
-                return False
-            if idx in line_by_idx:
-                return False
-            line_by_idx[idx] = line
+    @staticmethod
+    def _ensure_sentence(text: str) -> str:
+        cleaned = LLMAssistant._clean_generated_text(text)
+        if not cleaned:
+            return ""
+        if cleaned[-1] in ".!?":
+            return cleaned
+        return cleaned + "."
 
+    @staticmethod
+    def _best_alternative(
+        recommendations: Sequence[dict[str, Any]],
+        skip_action_index: int,
+    ) -> dict[str, Any] | None:
         for rec in recommendations:
-            idx = int(rec["action_index"])
-            card = str(rec["card"]).lower()
-            prob = float(rec["probability"])
-            line = line_by_idx.get(idx)
-            if line is None:
-                return False
-            if card not in line:
-                return False
-            if re.search(rf"p\s*=\s*{prob:.3f}\b", line) is None:
-                return False
-        return True
+            if int(rec["action_index"]) != int(skip_action_index):
+                return rec
+        return None
+
+    def _fallback_tradeoff(
+        self,
+        action_index: int,
+        recommendations: Sequence[dict[str, Any]],
+        state_summary: dict[str, Any],
+    ) -> str:
+        alternative = self._best_alternative(recommendations, skip_action_index=action_index)
+        if alternative is None:
+            return "No alternative remains because this is the only legal move."
+        alt_label = str(alternative.get("action_label", f"idx {alternative['action_index']} -> {alternative['card']}"))
+        alt_reason = self._card_tradeoff(str(alternative["card"]), state_summary).rstrip(".")
+        return f"Skipping {alt_label} means passing on an option that {alt_reason}."
 
     @staticmethod
     def _card_tradeoff(card: str, state_summary: dict[str, Any]) -> str:
@@ -517,6 +687,12 @@ class LLMAssistant:
             return "solid immediate points, especially higher nigiri values."
         if card == rules.WASABI:
             return "setup card; strongest if you can follow with high nigiri soon."
+        if card == rules.CHOPSTICKS:
+            return "lets you convert a later turn into a two-card combo turn."
+        if card == rules.PUDDING:
+            return "scores at end of game, so it matters across rounds rather than immediately."
+        if "+" in card:
+            return "two-card chopsticks line that combines immediate tempo with setup value."
         if card in rules.MAKI_ICONS:
             my_maki = int(state_summary.get("my_maki_icons", 0))
             opp_maki = int(state_summary.get("opp_maki_icons", 0))
@@ -579,7 +755,14 @@ class LLMAssistant:
     def _default_coach_user_prompt() -> str:
         return (
             "STATE_JSON:\n{{STATE_JSON}}\n\n"
-            "Provide exactly {{TOPK}} recommended action indices with short tradeoffs."
+            "Return JSON only. Use exactly the action_index values already present in agent_recommendation.\n"
+            "Schema:\n"
+            "{\n"
+            '  "recommendations": [\n'
+            '    {"action_index": 0, "reason": "short state-grounded reason", "tradeoff": "short comparison to another legal line"}\n'
+            "  ]\n"
+            "}\n"
+            "Include exactly {{TOPK}} items, one per recommended action."
         )
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Unit tests for deterministic Sushi Go v1 scoring rules."""
+"""Unit tests for the implemented 3-round Sushi Go scoring rules."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def test_wasabi_application_order(cards: list[str], expected: int) -> None:
 @pytest.mark.parametrize(
     ("my_maki", "opp_maki", "expected"),
     [
-        (5, 5, (4.5, 4.5)),
+        (5, 5, (3.0, 3.0)),
         (8, 3, (6.0, 3.0)),
         (2, 7, (3.0, 6.0)),
     ],
@@ -75,12 +75,35 @@ def test_maki_scoring(my_maki: int, opp_maki: int, expected: tuple[float, float]
     assert rules.score_maki(my_maki, opp_maki) == expected
 
 
+@pytest.mark.parametrize(
+    ("my_pudding", "opp_pudding", "expected"),
+    [
+        (0, 0, (0.0, 0.0)),
+        (4, 2, (6.0, 0.0)),
+        (1, 5, (0.0, 6.0)),
+        (4, 2, (6.0, -6.0)),
+    ],
+)
+def test_pudding_scoring(
+    my_pudding: int,
+    opp_pudding: int,
+    expected: tuple[float, float],
+) -> None:
+    penalty_for_last = expected[1] < 0 or expected[0] < 0
+    assert rules.score_pudding(my_pudding, opp_pudding, penalty_for_last=penalty_for_last) == expected
+
+
 def test_deck_composition_matches_spec() -> None:
     deck = rules.build_deck()
-    assert len(deck) == 94
+    assert len(deck) == 108
     counts = rules.count_cards(deck)
     for card, expected_count in rules.DECK_COMPOSITION.items():
         assert counts[card] == expected_count
+
+
+def test_count_pudding_counts_only_pudding_cards() -> None:
+    cards = [rules.PUDDING, rules.TEMPURA, rules.PUDDING, rules.CHOPSTICKS]
+    assert rules.count_pudding(cards) == 2
 
 
 def test_score_round_is_consistent_with_score_total() -> None:

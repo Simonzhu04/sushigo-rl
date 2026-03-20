@@ -1,16 +1,19 @@
 STATE_JSON:
 {{STATE_JSON}}
 
-Provide exactly {{TOPK}} legal move suggestions (action indices).
-For each suggestion include:
-1) card name + action index
-2) probability if available
-3) one short reason tied to state features
-4) one short tradeoff versus another legal option
+Use exactly the `action_index` values already present in `agent_recommendation`.
+Provide exactly {{TOPK}} items.
 
-Focus on strategy signals such as pair/triple progress, maki race, and wasabi-nigiri timing.
+For each item include:
+- action_index
+- reason
+- tradeoff
 
-Output format:
-1. idx X (card, p=...): reason. Tradeoff: ...
-2. ...
-3. ...
+Focus on pair/triple progress, maki race, pudding pressure, and wasabi-nigiri timing when relevant.
+
+Return JSON only in this schema:
+{
+  "recommendations": [
+    {"action_index": 0, "reason": "short state-grounded reason", "tradeoff": "short comparison to another legal option"}
+  ]
+}

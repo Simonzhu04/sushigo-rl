@@ -113,12 +113,17 @@ def _format_played_counts(cards: tuple[str, ...]) -> str:
 
 def _print_turn_header(info: dict[str, Any], hand_size: int) -> None:
     turn = int(info["turn"])
-    print(f"\nTurn {turn + 1}/{hand_size}")
+    round_idx = int(info.get("round_idx", 0))
+    num_rounds = int(info.get("num_rounds", 1))
+    print(f"\nRound {round_idx + 1}/{num_rounds}, turn {turn + 1}/{hand_size}")
     my_hand = list(info["my_hand"])
     print("Your hand:")
     for idx, card in enumerate(my_hand):
         print(f"  [{idx}] {card}")
-    print(f"Legal indices: {np.flatnonzero(info['action_mask']).tolist()}")
+    print("Legal actions:")
+    legal_actions = np.flatnonzero(info["action_mask"]).tolist()
+    for action in legal_actions:
+        print(f"  {SushiGoEnv.describe_action(int(action), my_hand, hand_size=hand_size)}")
 
 
 def _print_visible_state(info: dict[str, Any]) -> None:
@@ -132,6 +137,7 @@ def _print_visible_state(info: dict[str, Any]) -> None:
         f"you={rules.count_maki_icons(my_played)} "
         f"opponent={rules.count_maki_icons(opp_played)}"
     )
+    print(f"Pudding totals: you={info.get('my_pudding', 0)} opponent={info.get('opp_pudding', 0)}")
 
 
 def _print_final_breakdown(info: dict[str, Any]) -> None:
@@ -264,11 +270,16 @@ def main() -> None:
         del obs
 
         my_idx, opp_idx = info["last_actions"]
-        my_card = info["my_played"][-1]
-        opp_card = info["opp_played"][-1]
+        my_desc, opp_desc = info.get(
+            "last_action_descriptions",
+            (
+                SushiGoEnv.describe_action(my_idx, info["my_hand"], hand_size=env.hand_size),
+                SushiGoEnv.describe_action(opp_idx, info["opp_hand"], hand_size=env.hand_size),
+            ),
+        )
         print(
-            f"Turn result: you played [{my_idx}] {my_card}; "
-            f"opponent played [{opp_idx}] {opp_card}"
+            f"Turn result: you played {my_desc}; "
+            f"opponent played {opp_desc}"
         )
         if args.llm_only:
             trace = opponent_controller.trace

@@ -1,4 +1,4 @@
-"""Deterministic heuristic baseline for Sushi Go v1."""
+"""Deterministic heuristic baseline for the 3-round Sushi Go variant."""
 
 from __future__ import annotations
 
@@ -22,21 +22,38 @@ class HeuristicAgent:
         best_action: int | None = None
         best_score = float("-inf")
 
+        max_hand = rules.HAND_SIZE  # 10
+
         for action, is_legal in enumerate(policy_input.action_mask):
             if not bool(is_legal):
                 continue
-            card = policy_input.hand[action]
-            score = self._card_value(
-                card=card,
-                hand=policy_input.hand,
-                counts=counts,
-                available_wasabi=available_wasabi,
-                my_maki=my_maki,
-                opp_maki=opp_maki,
-                hand_size=policy_input.hand_size,
-            )
 
-            # Deterministic tie-breaker: choose the lowest index.
+            if action < max_hand:
+                card = policy_input.hand[action]
+                score = self._card_value(
+                    card=card,
+                    hand=policy_input.hand,
+                    counts=counts,
+                    available_wasabi=available_wasabi,
+                    my_maki=my_maki,
+                    opp_maki=opp_maki,
+                    hand_size=policy_input.hand_size,
+                )
+            else:
+                k = action - max_hand
+                i = k // (max_hand - 1)
+                j = k % (max_hand - 1)
+                if j >= i:
+                    j += 1
+
+                c1 = policy_input.hand[i]
+                c2 = policy_input.hand[j]
+                score = (
+                    self._card_value(c1, policy_input.hand, counts, available_wasabi, my_maki, opp_maki, policy_input.hand_size)
+                    + self._card_value(c2, policy_input.hand, counts, available_wasabi, my_maki, opp_maki, policy_input.hand_size)
+                    + 0.25  
+                )
+
             if score > best_score:
                 best_score = score
                 best_action = action
@@ -55,6 +72,12 @@ class HeuristicAgent:
         opp_maki: int,
         hand_size: int,
     ) -> float:
+        if card == rules.CHOPSTICKS:
+            if hand_size >= 8:
+                return 1.6
+            if hand_size >= 5:
+                return 1.0
+            return 0.4
         if card == rules.TEMPURA:
             return 5.0 if counts[rules.TEMPURA] % 2 == 1 else 1.0
 
@@ -89,6 +112,15 @@ class HeuristicAgent:
             if hand_size <= 3 and abs(race_gap) <= 3:
                 urgency += 0.6
             return icons * urgency
+        
+        if card == rules.PUDDING:
+            # Simple heuristic: puddings matter more early than late.
+            # (End-of-game scoring; we don't model full game state here.)
+            if hand_size >= 8:
+                return 2.0
+            if hand_size >= 5:
+                return 1.2
+            return 0.6
 
         raise ValueError(f"Unknown card: {card}")
 

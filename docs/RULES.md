@@ -1,275 +1,149 @@
-# Sushi Go – 2 Player Reduced Version (RL Project Specification)
+# Sushi Go RL Rules Specification
 
-This document defines the exact rules that MUST be implemented.
-The environment implementation MUST strictly follow this specification.
+This document defines the implemented rules for the `sushigo-rl-guanfang` environment.
 
-This is NOT the full commercial rulebook.
-This is a reduced, deterministic RL-focused version.
+It is a deterministic 2-player, 3-round Sushi Go variant intended for reinforcement learning experiments.
 
----
+## 1. Game configuration
 
-# 1. Game Configuration
+- Players: exactly 2
+- Learning agent: player 0
+- Opponent: player 1
+- Rounds: 3
+- Default hand size: `10`
+- All randomness must come from the environment RNG and respect `reset(seed=...)`
 
-## Players
-- Exactly 2 players.
-- Player 0 = learning agent.
-- Player 1 = opponent.
+## 2. Deck composition
 
-## Rounds
-- 1 round only.
-- No pudding.
+The fixed deck contains:
 
-## Determinism
-- All randomness MUST use the environment seed.
-- Reset with the same seed MUST produce identical initial hands and deck order.
+- Tempura: 14
+- Sashimi: 14
+- Dumpling: 14
+- Maki-1: 6
+- Maki-2: 12
+- Maki-3: 8
+- Nigiri-1: 10
+- Nigiri-2: 5
+- Nigiri-3: 5
+- Wasabi: 6
+- Pudding: 10
+- Chopsticks: 4
 
----
+Total cards: `108`
 
-# 2. Deck Composition
+At the start of each round:
 
-The deck MUST contain exactly the following cards:
+- shuffle the full fixed deck with the environment RNG
+- deal `HAND_SIZE` cards to each player
+- unused cards remain out of play for that round
 
-Tempura: 14  
-Sashimi: 14  
-Dumpling: 14  
-Maki-1: 6  
-Maki-2: 12  
-Maki-3: 8  
-Nigiri-1 (Egg): 10  
-Nigiri-2 (Salmon): 5  
-Nigiri-3 (Squid): 5  
-Wasabi: 6  
+## 3. Turn structure
 
-Total cards = 94
+Each round lasts exactly `HAND_SIZE` turns.
 
-At the start of each episode:
-- Shuffle full deck using provided RNG seed.
-- Deal HAND_SIZE cards to each player.
-- Remaining cards are unused.
+Per turn:
 
-Default:
-HAND_SIZE = 10
+1. both players choose an action simultaneously
+2. actions resolve simultaneously
+3. played cards are added to the current round pile in play order
+4. remaining hands are swapped
+5. turn counter increments
 
-Thus:
-- 20 cards used per episode
-- 74 unused
+After `HAND_SIZE` turns:
 
----
+- the round is scored
+- current-round played piles reset
+- a fresh round starts unless this was round 3
 
-# 3. Turn Structure
+## 4. Actions
 
-Each episode consists of exactly HAND_SIZE turns.
+The environment uses a fixed discrete action space.
 
-At each turn:
+For `HAND_SIZE = 10`:
 
-1. Both players choose one card from their current hand.
-2. Choices are revealed simultaneously.
-3. Each chosen card is added to that player's played pile.
-4. The remaining cards in each hand are swapped between players.
-5. Continue to next turn.
+- actions `0..9` mean: play the card at that hand index
+- the remaining actions encode ordered two-card chopsticks plays
 
-After HAND_SIZE turns:
-- Both hands are empty.
-- Round ends.
-- Scores are computed.
+Chopsticks action requirements:
 
----
+- the player must already have a `chopsticks` card in their current round played pile
+- the player must have at least 2 cards in hand
+- the chosen two indices must be distinct
+- after the two-card play resolves, one `chopsticks` card is removed from the table and returned to hand
 
-# 4. Action Rules
+The environment must expose an action mask for legal actions.
 
-- Action is an index into the current hand.
-- Only indices < current hand size are legal.
-- Selecting an invalid action MUST raise an error or be rejected.
-- Environment MUST provide an action mask.
+## 5. Scoring
 
----
+### 5.1 Tempura
 
-# 5. Scoring Rules
+- `5` points per pair
 
-Scoring occurs ONLY at the end of the round.
+### 5.2 Sashimi
 
-All scoring must be deterministic and follow exactly the rules below.
+- `10` points per triple
 
----
+### 5.3 Dumpling
 
-## 5.1 Tempura
+- cumulative progression: `0, 1, 3, 6, 10, 15`
+- capped at 5 or more dumplings
 
-- 5 points per pair.
-- Extra unpaired cards give 0.
+### 5.4 Nigiri and Wasabi
 
-Formula:
-floor(tempura_count / 2) * 5
+- Nigiri values are `1`, `2`, and `3`
+- Wasabi triples the next later Nigiri in play order
+- Wasabi does not affect Nigiri played before it
 
-Examples:
-- 0 → 0
-- 1 → 0
-- 2 → 5
-- 3 → 5
-- 4 → 10
+### 5.5 Maki
 
----
-
-## 5.2 Sashimi
-
-- 10 points per triple.
-- Extra unpaired cards give 0.
-
-Formula:
-floor(sashimi_count / 3) * 10
-
-Examples:
-- 0 → 0
-- 2 → 0
-- 3 → 10
-- 6 → 20
-
----
-
-## 5.3 Dumpling
-
-Dumpling scoring is cumulative:
-
-Count → Points
-0 → 0
-1 → 1
-2 → 3
-3 → 6
-4 → 10
-5 or more → 15
-
-If count > 5, score = 15.
-
----
-
-## 5.4 Nigiri
-
-Nigiri values:
-Nigiri-1 → 1
-Nigiri-2 → 2
-Nigiri-3 → 3
-
----
-
-## 5.5 Wasabi
-
-Wasabi modifies Nigiri scoring.
-
-Rule:
-
-- When a Wasabi card is played, it becomes "available".
-- The NEXT Nigiri card played by that player AFTER that Wasabi is worth triple its value.
-- Each Wasabi can only affect one Nigiri.
-- If multiple Wasabi are available, they apply in order played.
-- Wasabi does NOT retroactively affect Nigiri played before it.
-- Wasabi without a later Nigiri gives 0 points.
-
-Implementation requirement:
-
-Nigiri scoring MUST consider play order.
-
-Example:
-
-Play order:
-Wasabi, Nigiri-3 → 9 points
-Wasabi, Nigiri-2, Nigiri-3 → 6 + 3
-Nigiri-3, Wasabi → 3 points only
-
----
-
-## 5.6 Maki
-
-Each Maki card contributes icons:
-
-Maki-1 → 1 icon  
-Maki-2 → 2 icons  
-Maki-3 → 3 icons  
-
-Total maki icons are summed per player.
-
-Scoring (2 players only):
-
-- Player with higher total receives 6 points.
-- Player with lower total receives 3 points.
-- If totals are equal:
-    - Split 6 + 3 = 9 points evenly.
-    - Each player receives 4.5 points.
-
-Scoring MUST allow fractional values.
-
----
-
-# 6. Total Score
-
-Each player's total score is:
-
-Tempura
-+ Sashimi
-+ Dumpling
-+ Nigiri (including Wasabi effects)
-+ Maki bonus
-
-Scores may be float due to maki ties.
-
----
-
-# 7. Reward Function
-
-Reward is ONLY given at terminal state.
-
-Reward = my_total_score − opponent_total_score
-
-Intermediate rewards = 0
-
----
-
-# 8. Episode Termination
-
-Episode terminates exactly after HAND_SIZE turns.
-
-There is no truncation except if externally forced.
-
----
-
-# 9. Observation Requirements (Implementation Constraint)
-
-The environment must:
-
-- Provide fixed-size observation vector.
-- Provide action mask.
-- Expose enough information to reconstruct:
-    - My played pile
-    - Opponent played pile
-    - Current hand
-    - Turn number
-
-Exact encoding is defined in environment code, not here.
-
----
-
-# 10. Invariants (Must Hold)
-
-- Same seed → same deck → same initial hands.
-- Same sequence of actions → identical final score.
-- Final score from environment MUST equal direct scoring from played piles.
-- Episode length MUST equal HAND_SIZE.
-
----
-
-# 11. Explicitly Excluded Rules
-
-The following are NOT included:
-
-- Pudding
-- Chopsticks
-- Multiple rounds
-- 3+ players
-- Special variants
-
----
-
-# 12. Scope Control
-
-This specification is frozen for version 1.
-No rules may be altered during RL development.
-
-All implementations must strictly follow this file.
+- Maki icons are summed within the round
+- higher total gets `6`
+- lower total gets `3`
+- if tied for most in 2-player mode, each player gets `3`
+
+### 5.6 Pudding
+
+- Pudding is not scored per round
+- all pudding cards are accumulated across the full 3-round game
+- at game end, the player with more pudding gets `+6`
+- this implementation uses `penalty_for_last=False`, so the player with fewer pudding does not receive `-6`
+- tied pudding counts score `0`
+
+## 6. Rewards
+
+- intermediate reward: `0`
+- terminal reward: `final_my_score - final_opp_score`
+
+`final_*_score` includes:
+
+- all round scores
+- end-of-game pudding scoring
+
+## 7. Observations
+
+Observations are fixed-size `np.float32` vectors containing:
+
+- my current-round played counts
+- opponent current-round played counts
+- my current hand counts
+- hand slot one-hot encoding
+- current turn
+- current hand size
+- my unpaired wasabi count
+- my maki icon count
+- opponent maki icon count
+- round index
+- my pudding count
+- opponent pudding count
+- my accumulated round score
+- opponent accumulated round score
+
+## 8. Determinism requirements
+
+The following must hold:
+
+- same seed produces the same initial state
+- same seed plus same action sequence produces the same trajectory
+- final reward equals `my_score - opp_score`
+- terminal scores agree with rules-module scoring helpers

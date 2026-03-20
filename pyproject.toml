@@ -5,11 +5,21 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sushigo-rl"
 version = "0.1.0"
-description = "2-player Sushi Go RL project"
+description = "2-player, 3-round Sushi Go reinforcement learning project with pudding and chopsticks"
 authors = [{name="Your Name"}]
 dependencies = [
+    "numpy>=1.26.0",
+    "gymnasium>=0.29.0",
+    "matplotlib>=3.8.0",
+    "stable-baselines3>=2.0.0",
+    "sb3-contrib>=2.0.0",
     "openai>=1.0.0",
     "google-genai>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
 ]
 
 [tool.setuptools.packages.find]

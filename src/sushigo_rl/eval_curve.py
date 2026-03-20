@@ -125,6 +125,22 @@ def _make_model_player_action(
     return _select_action
 
 
+# def _summaries_to_csv_rows(timesteps: int, summaries: list[EvalSummary]) -> list[dict[str, float | int | str]]:
+#     rows: list[dict[str, float | int | str]] = []
+#     for summary in summaries:
+#         opponent = summary.label.replace("policy vs ", "")
+#         rows.append(
+#             {
+#                 "timesteps": timesteps,
+#                 "opponent": opponent,
+#                 "win_rate_excl_ties": summary.win_rate_excluding_ties,
+#                 "win_rate_incl_ties": summary.win_rate_including_ties,
+#                 "tie_rate": summary.tie_rate,
+#                 "mean_score_diff": summary.mean_score_diff,
+#             }
+#         )
+#     return rows
+
 def _summaries_to_csv_rows(timesteps: int, summaries: list[EvalSummary]) -> list[dict[str, float | int | str]]:
     rows: list[dict[str, float | int | str]] = []
     for summary in summaries:
@@ -137,6 +153,12 @@ def _summaries_to_csv_rows(timesteps: int, summaries: list[EvalSummary]) -> list
                 "win_rate_incl_ties": summary.win_rate_including_ties,
                 "tie_rate": summary.tie_rate,
                 "mean_score_diff": summary.mean_score_diff,
+                "std_score_diff": summary.std_score_diff,
+                "p05_score_diff": summary.p05_score_diff,
+                "p25_score_diff": summary.p25_score_diff,
+                "p50_score_diff": summary.p50_score_diff,
+                "p75_score_diff": summary.p75_score_diff,
+                "p95_score_diff": summary.p95_score_diff,
             }
         )
     return rows
@@ -154,6 +176,14 @@ def _print_summary(summary: EvalSummary) -> None:
 
 def _write_csv(rows: list[dict[str, float | int | str]], csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    # fieldnames = [
+    #     "timesteps",
+    #     "opponent",
+    #     "win_rate_excl_ties",
+    #     "win_rate_incl_ties",
+    #     "tie_rate",
+    #     "mean_score_diff",
+    # ]
     fieldnames = [
         "timesteps",
         "opponent",
@@ -161,6 +191,12 @@ def _write_csv(rows: list[dict[str, float | int | str]], csv_path: Path) -> None
         "win_rate_incl_ties",
         "tie_rate",
         "mean_score_diff",
+        "std_score_diff",
+        "p05_score_diff",
+        "p25_score_diff",
+        "p50_score_diff",
+        "p75_score_diff",
+        "p95_score_diff",
     ]
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -172,21 +208,23 @@ def _write_csv(rows: list[dict[str, float | int | str]], csv_path: Path) -> None
 def _plot_learning_curve(rows: list[dict[str, float | int | str]], plot_path: Path) -> None:
     plot_path.parent.mkdir(parents=True, exist_ok=True)
 
-    grouped: dict[str, list[tuple[int, float, float]]] = {}
+    grouped: dict[str, list[dict[str, float | int | str]]] = {}
     for row in rows:
         opponent = str(row["opponent"])
-        grouped.setdefault(opponent, []).append(
-            (int(row["timesteps"]), float(row["win_rate_excl_ties"]), float(row["mean_score_diff"]))
-        )
+        grouped.setdefault(opponent, []).append(row)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 7), sharex=True)
     for opponent, values in sorted(grouped.items()):
-        values.sort(key=lambda item: item[0])
-        steps = [item[0] for item in values]
-        win_rates = [item[1] for item in values]
-        mean_diffs = [item[2] for item in values]
+        values.sort(key=lambda item: int(item["timesteps"]))
+        steps = [int(item["timesteps"]) for item in values]
+        win_rates = [float(item["win_rate_excl_ties"]) for item in values]
+        mean_diffs = [float(item["mean_score_diff"]) for item in values]
+        p25 = [float(item["p25_score_diff"]) for item in values]
+        p75 = [float(item["p75_score_diff"]) for item in values]
+
         ax1.plot(steps, win_rates, marker="o", label=opponent)
         ax2.plot(steps, mean_diffs, marker="o", label=opponent)
+        ax2.fill_between(steps, p25, p75, alpha=0.2)
 
     ax1.set_ylabel("Win Rate (Excl. Ties)")
     ax1.set_ylim(0.0, 1.0)
@@ -198,6 +236,8 @@ def _plot_learning_curve(rows: list[dict[str, float | int | str]], plot_path: Pa
     ax2.grid(True, alpha=0.3)
     ax2.legend()
 
+    fig.suptitle("Sushi Go RL Learning Curve", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
     fig.tight_layout()
     fig.savefig(plot_path, dpi=150)
     plt.close(fig)

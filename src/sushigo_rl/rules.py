@@ -1,4 +1,4 @@
-"""Deterministic Sushi Go v1 rules and scoring helpers.
+"""Deterministic Sushi Go scoring helpers for the 3-round RL variant.
 
 This module is pure logic only. It contains no environment state or randomness
 outside deck construction order (which is deterministic and unshuffled).
@@ -21,6 +21,8 @@ NIGIRI_1: str = "nigiri1"
 NIGIRI_2: str = "nigiri2"
 NIGIRI_3: str = "nigiri3"
 WASABI: str = "wasabi"
+PUDDING: str = "pudding"
+CHOPSTICKS: str = "chopsticks"
 
 CARD_TYPES: tuple[str, ...] = (
     TEMPURA,
@@ -33,6 +35,8 @@ CARD_TYPES: tuple[str, ...] = (
     NIGIRI_2,
     NIGIRI_3,
     WASABI,
+    PUDDING,
+    CHOPSTICKS,
 )
 
 DECK_COMPOSITION: Mapping[str, int] = {
@@ -46,6 +50,8 @@ DECK_COMPOSITION: Mapping[str, int] = {
     NIGIRI_2: 5,
     NIGIRI_3: 5,
     WASABI: 6,
+    PUDDING: 10,
+    CHOPSTICKS: 4,
 }
 
 DUMPLING_POINTS: tuple[int, ...] = (0, 1, 3, 6, 10, 15)
@@ -80,7 +86,7 @@ class ScoreBreakdown:
 
 
 def build_deck() -> list[str]:
-    """Return the full unshuffled deck for rules v1."""
+    """Return the full unshuffled deck for the implemented ruleset."""
     deck: list[str] = []
     for card in CARD_TYPES:
         deck.extend([card] * DECK_COMPOSITION[card])
@@ -157,13 +163,15 @@ def score_nigiri(cards_in_play_order: Sequence[str]) -> int:
 def score_maki(my_maki_icons: int, opp_maki_icons: int) -> tuple[float, float]:
     """Score maki bonus for 2 players only.
 
-    Higher total gets 6, lower gets 3, ties split 9 => 4.5 each.
+    Higher total gets 6, lower gets 3, ties for first give 3 each.
     """
     if my_maki_icons == opp_maki_icons:
-        return 4.5, 4.5
+        # Official 2-player rule: tie for most => split 6 (3 each), no second place.
+        return 3.0, 3.0
     if my_maki_icons > opp_maki_icons:
         return 6.0, 3.0
     return 3.0, 6.0
+
 
 
 def score_non_maki(cards_in_play_order: Sequence[str]) -> tuple[float, float, float, float]:
@@ -204,3 +212,29 @@ def score_round(
     p0 = score_total(player0_cards_in_play_order, player1_cards_in_play_order)
     p1 = score_total(player1_cards_in_play_order, player0_cards_in_play_order)
     return p0, p1
+
+
+###Pudding
+def count_pudding(cards: Sequence[str]) -> int:
+    """Count pudding cards in a sequence (e.g., accumulated across rounds)."""
+    return sum(1 for c in cards if c == PUDDING)
+
+def score_pudding(
+    my_pudding: int,
+    opp_pudding: int,
+    *,
+    penalty_for_last: bool = False,
+) -> tuple[float, float]:
+    """Score pudding at end of the full game (not per round).
+
+    Base Sushi Go (2 players): most pudding +6, least pudding -6.
+   Many 2-player house rules use "only add, no subtract" for last.
+    Set penalty_for_last=False to implement that house rule.
+
+    Returns (my_pudding_score, opp_pudding_score).
+    """
+    if my_pudding == opp_pudding:
+        return 0.0, 0.0
+    if my_pudding > opp_pudding:
+        return 6.0, (-6.0 if penalty_for_last else 0.0)
+    return (-6.0 if penalty_for_last else 0.0), 6.0

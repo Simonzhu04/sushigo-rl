@@ -15,8 +15,8 @@ from sushigo_rl.llm_assistant import LLMAssistant, PolicyAdvisor
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate LLM demo transcripts")
-    parser.add_argument("--model-path", type=Path, default=Path("artifacts/final_policy.zip"))
-    parser.add_argument("--vecnorm-path", type=Path, default=Path("artifacts/final_vecnorm.pkl"))
+    parser.add_argument("--model-path", type=Path, default=Path("runs/guanfang_best_20260316.zip"))
+    parser.add_argument("--vecnorm-path", type=Path, default=Path("runs/guanfang_best_20260316.vecnormalize.pkl"))
     parser.add_argument("--episodes", type=int, default=5)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--topk", type=int, default=3)
