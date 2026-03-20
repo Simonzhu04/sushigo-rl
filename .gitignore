@@ -1,2 +1,4 @@
 runs/*
+!runs/guanfang_best_20260316.zip
+!runs/guanfang_best_20260316.vecnormalize.pkl
 *.pyc
