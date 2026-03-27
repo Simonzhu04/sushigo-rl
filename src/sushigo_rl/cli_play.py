@@ -75,13 +75,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-path",
         type=Path,
-        default=Path("runs/guanfang_best_20260316.zip"),
+        default=Path("runs/repro_curriculum_1m.zip"),
         help="Frozen RL policy path (.zip or base path)",
     )
     parser.add_argument(
         "--vecnorm-path",
         type=Path,
-        default=Path("runs/guanfang_best_20260316.vecnormalize.pkl"),
+        default=Path("runs/repro_curriculum_1m.vecnormalize.pkl"),
         help="VecNormalize stats path (optional)",
     )
     parser.add_argument("--seed", type=int, default=0, help="Episode seed")

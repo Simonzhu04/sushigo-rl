@@ -13,8 +13,8 @@ from sushigo_rl.llm_assistant import LLMAssistant, PolicyAdvisor, evaluate_expla
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate LLM explanation quality metrics")
-    parser.add_argument("--model-path", type=Path, default=Path("runs/guanfang_best_20260316.zip"))
-    parser.add_argument("--vecnorm-path", type=Path, default=Path("runs/guanfang_best_20260316.vecnormalize.pkl"))
+    parser.add_argument("--model-path", type=Path, default=Path("runs/repro_curriculum_1m.zip"))
+    parser.add_argument("--vecnorm-path", type=Path, default=Path("runs/repro_curriculum_1m.vecnormalize.pkl"))
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=123)
     parser.add_argument("--topk", type=int, default=3)

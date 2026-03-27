@@ -1,4 +1,9 @@
 runs/*
 !runs/guanfang_best_20260316.zip
 !runs/guanfang_best_20260316.vecnormalize.pkl
+!runs/repro_curriculum_1m.zip
+!runs/repro_curriculum_1m.vecnormalize.pkl
 *.pyc
+*.aux
+*.log
+*.out
