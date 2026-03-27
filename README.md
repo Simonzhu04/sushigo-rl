@@ -1,25 +1,30 @@
 # Sushi Go RL (3-Round Variant)
 
-This project implements a 2-player Sushi Go reinforcement-learning environment with:
+This repo implements a deterministic 2-player Sushi Go reinforcement-learning environment, baseline agents, PPO training/evaluation utilities, and an LLM-backed explain/coach layer.
+
+Current repo status:
 
 - 3 rounds per game
 - end-of-game pudding scoring
 - chopsticks double-play actions
 - random and heuristic opponents
 - MaskablePPO training and evaluation utilities
-- optional LLM explain/coach tooling
+- interactive CLI play against the RL model or heuristic
+- optional LLM move explanations and coaching
 
-It is a fuller game variant than the reduced 1-round prototype.
+The source-of-truth rules doc is [docs/RULES.md](docs/RULES.md).
 
-## Game rules implemented
+## Game Summary
+
+Implemented rules:
 
 - 2 players
 - 3 rounds
 - `HAND_SIZE = 10`
-- each turn both players draft simultaneously, then pass hands
-- fresh hands are dealt each round
-- pudding is accumulated across rounds and scored at game end
-- chopsticks allows a player to play two cards in one turn, then return the chopsticks card to hand
+- simultaneous drafting, then hand passing every turn
+- fresh hands dealt each round from the fixed deck
+- pudding accumulated across rounds and scored at game end
+- chopsticks allows a two-card play and returns one chopsticks card to hand
 
 Implemented card set:
 
@@ -32,46 +37,38 @@ Implemented card set:
 - Pudding
 - Chopsticks
 
-Scoring notes:
+Scoring highlights:
 
 - Tempura: `5` per pair
 - Sashimi: `10` per triple
-- Dumpling: standard capped progression `0,1,3,6,10,15`
-- Wasabi applies to the next later Nigiri in play order
-- 2-player maki ties use the official-style split for first only: `3` each
-- pudding is scored only once at game end
-- this project uses `penalty_for_last=False` for pudding, so the player with fewer puddings does not lose points
-
-The source-of-truth rules doc is [docs/RULES.md](docs/RULES.md).
+- Dumpling: capped progression `0,1,3,6,10,15`
+- Wasabi affects the next later Nigiri in play order
+- 2-player maki tie for first splits first place as `3` each
+- pudding is scored once at game end with `penalty_for_last=False`
 
 ## Environment API
 
-`SushiGoEnv` exposes a Gymnasium-style API:
+`SushiGoEnv` exposes:
 
 - `reset(seed=None) -> (obs, info)`
 - `step(action) -> (obs, reward, terminated, truncated, info)`
 
-Observation contents include:
+Observation:
 
-- my played counts for the current round
-- opponent played counts for the current round
-- current hand counts
-- fixed hand-slot encoding
-- turn index
-- current hand size
+- fixed-size `np.float32` vector
+- current played counts for both players
+- current hand counts plus fixed slot encoding
+- turn, hand size, round index
 - wasabi and maki summary features
-- round index
 - pudding counts
-- accumulated round scores before final pudding scoring
+- accumulated round scores
 
-## Action space
+Action space:
 
-The environment uses a fixed discrete action space of size `100` when `HAND_SIZE = 10`.
+- `0..9`: play one card from the current hand index
+- `10..99`: ordered chopsticks double-play actions
 
-- `0..9`: play one card from the corresponding hand index
-- `10..99`: ordered chopsticks actions representing two card indices
-
-Helper methods:
+Useful helpers:
 
 - `SushiGoEnv.decode_action_index(...)`
 - `SushiGoEnv.cards_for_action(...)`
@@ -85,12 +82,29 @@ From the repo root:
 python -m pip install -e .
 ```
 
-Or create the conda environment:
+Or with Conda:
 
 ```bash
 conda env create -f environment.yml
 conda activate sushigo-rl
+python -m pip install -e .
 ```
+
+## Best Checkpoint
+
+The tracked best checkpoint in this repo is:
+
+- `runs/guanfang_best_20260316.zip`
+- `runs/guanfang_best_20260316.vecnormalize.pkl`
+
+Fresh confirmation results on the current repo state:
+
+- deterministic eval, 1000 episodes vs random: `94.7%` win rate, `+15.320` mean score diff
+- deterministic eval, 1000 episodes vs heuristic: `85.4%` win rate, `+11.473` mean score diff
+- stochastic eval, 1000 episodes vs random: `92.2%` win rate, `+14.184` mean score diff
+- stochastic eval, 1000 episodes vs heuristic: `80.6%` win rate, `+9.387` mean score diff
+
+For the exact commands and recorded results, see [results/guanfang_best_20260316.md](results/guanfang_best_20260316.md).
 
 ## Training
 
@@ -100,13 +114,18 @@ Basic training:
 python -m sushigo_rl.train --timesteps 200000 --seed 0 --model-out runs/latest
 ```
 
-Useful options:
+Common options:
 
 - `--opponent-mode random|heuristic|mix|curriculum`
+- `--mix-random-prob 0.5`
+- `--curriculum-stages "0.0:200000,0.2:200000,0.5:200000"`
 - `--vecnorm`
+- `--vecnorm-path runs/latest.vecnormalize.pkl`
 - `--checkpoint-every N`
+- `--checkpoint-dir runs/checkpoints`
 - `--tensorboard-log runs/tb`
 - `--overfit-test`
+- `--fixed-episode-seed`
 
 Example curriculum run:
 
@@ -116,21 +135,34 @@ python -m sushigo_rl.train \
   --curriculum-stages "0.0:100000,0.3:100000,0.6:100000" \
   --timesteps 300000 \
   --vecnorm \
+  --vecnorm-path runs/curriculum_300k_decay.vecnormalize.pkl \
   --model-out runs/curriculum_300k_decay
 ```
 
 ## Evaluation
 
-Evaluate a model against random and heuristic opponents:
+Evaluate the tracked best model:
 
 ```bash
 python -m sushigo_rl.eval \
-  --model runs/curriculum_300k_decay.zip \
+  --model runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl \
   --episodes 500 \
-  --opponents both
+  --opponents both \
+  --deterministic
 ```
 
-If the model was trained with `VecNormalize`, also pass `--vecnorm-path`.
+Run baseline-only matchups:
+
+```bash
+python -m sushigo_rl.eval --opponents none --baselines heuristic_vs_random --episodes 500
+```
+
+Run the determinism sanity check:
+
+```bash
+python -m sushigo_rl.eval --opponents none --baselines none --repro-check
+```
 
 The evaluator reports:
 
@@ -140,26 +172,140 @@ The evaluator reports:
 - score-difference mean, std, and percentiles
 - mean player and opponent score
 
-## CLI play and LLM tools
+## Play In The Terminal
 
-Play in the terminal:
+Play against the RL checkpoint:
 
 ```bash
-python -m sushigo_rl.cli_play --opponent heuristic
+python -m sushigo_rl.cli_play \
+  --opponent rl \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl
 ```
 
-Generate LLM demo transcripts:
+Play against the heuristic:
 
 ```bash
-python -m sushigo_rl.llm_demo --no-llm --episodes 2
+python -m sushigo_rl.cli_play \
+  --opponent heuristic \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl
+```
+
+Interactive commands during play:
+
+- enter an action index to play that move
+- `help` to get coaching for your current turn
+- `why` to explain the opponent's last move
+- `quit` to exit
+
+LLM-only autoplay mode:
+
+```bash
+python -m sushigo_rl.cli_play \
+  --opponent rl \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl \
+  --llm-only
+```
+
+## LLM Setup
+
+The coach/explain layer supports OpenAI, Gemini, or deterministic fallback templates.
+
+By default:
+
+- if an OpenAI key is present, OpenAI is preferred
+- otherwise if a Gemini key is present, Gemini is used
+- otherwise the repo falls back to built-in template text
+
+Supported environment variables:
+
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` with default `gpt-5.2`
+- `GOOGLE_API_KEY` or `GEMINI_API_KEY`
+- `GEMINI_MODEL` with default `gemini-2.5-flash`
+- `LLM_PROVIDER` with `auto|openai|gemini|fallback`
+
+Example OpenAI setup:
+
+```bash
+export OPENAI_API_KEY=your_key_here
+export OPENAI_MODEL=gpt-5.2
+python -m sushigo_rl.cli_play \
+  --opponent rl \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl
+```
+
+Example Gemini setup:
+
+```bash
+export GOOGLE_API_KEY=your_key_here
+export GEMINI_MODEL=gemini-2.5-flash
+python -m sushigo_rl.cli_play \
+  --opponent rl \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl
+```
+
+Force fallback text even if API keys are set:
+
+```bash
+python -m sushigo_rl.cli_play \
+  --opponent rl \
+  --model-path runs/guanfang_best_20260316.zip \
+  --vecnorm-path runs/guanfang_best_20260316.vecnormalize.pkl \
+  --no-llm
+```
+
+## LLM Demo And Evaluation Commands
+
+Generate move-by-move demo transcripts:
+
+```bash
+python -m sushigo_rl.llm_demo --episodes 2
+```
+
+Force demo fallback templates:
+
+```bash
+python -m sushigo_rl.llm_demo --episodes 2 --no-llm
+```
+
+Write the transcript to a specific file:
+
+```bash
+python -m sushigo_rl.llm_demo --episodes 1 --output-path runs/llm_logs/demo.txt
+```
+
+Quantitatively score explain/coach output:
+
+```bash
+python -m sushigo_rl.llm_eval --episodes 100 --mode both
+```
+
+Force a specific provider:
+
+```bash
+python -m sushigo_rl.llm_eval --provider openai
+python -m sushigo_rl.llm_demo --provider gemini
 ```
 
 ## Tests
 
-Run:
+Run the full test suite:
 
 ```bash
 pytest -q
 ```
 
-The current tests cover rules, environment behavior, and LLM helper behavior.
+Current status: `51 passed`.
+
+The tests cover:
+
+- scoring rules
+- environment determinism and legality
+- observation encoding
+- LLM provider behavior
+- LLM assistant helper behavior
