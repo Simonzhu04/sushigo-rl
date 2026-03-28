@@ -97,7 +97,7 @@ The current tracked best checkpoint in this repo is:
 - `runs/repro_curriculum_1m.zip`
 - `runs/repro_curriculum_1m.vecnormalize.pkl`
 
-This model was freshly reproduced from the current training scripts with a 1,000,000-step curriculum run and matching `VecNormalize` statistics.
+This model was freshly reproduced from the current training scripts with a 1,000,000-step curriculum run and matching `VecNormalize` statistics. Intermediate checkpoints at every 100k steps are in `runs/repro_curriculum_1m_checkpoints/`.
 
 Confirmed deterministic evaluation on the current repo state, 1000 episodes:
 
@@ -110,6 +110,23 @@ Baseline controls:
 - random vs random: near-balanced, `47.6%` win rate for player 1, `+0.065` mean score diff
 
 For the exact training and evaluation commands, see [results/repro_curriculum_1m.md](results/repro_curriculum_1m.md).
+
+## Ablation: Opponent Training Regime
+
+Two ablation models (1M steps, seed 1) isolate the effect of curriculum training:
+
+| Training regime | vs Random WR | vs Heuristic WR |
+|----------------|-------------|----------------|
+| Random-only | 0.968 | 0.866 |
+| Heuristic-only | 0.955 | 0.955 |
+| **Curriculum** | **0.966** | **0.957** |
+
+Training against random only overfits to weak opponents (0.866 vs heuristic). Curriculum training achieves the strongest generalisation across both opponent types.
+
+Ablation checkpoints:
+
+- `runs/ablation_random_only.zip` + `runs/ablation_random_only.vecnormalize.pkl`
+- `runs/ablation_heuristic_only.zip` + `runs/ablation_heuristic_only.vecnormalize.pkl`
 
 ## Training
 

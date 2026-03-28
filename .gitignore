@@ -3,6 +3,14 @@ runs/*
 !runs/guanfang_best_20260316.vecnormalize.pkl
 !runs/repro_curriculum_1m.zip
 !runs/repro_curriculum_1m.vecnormalize.pkl
+!runs/repro_curriculum_1m_checkpoints/
+runs/repro_curriculum_1m_checkpoints/*
+!runs/repro_curriculum_1m_checkpoints/*.zip
+!runs/repro_curriculum_1m_checkpoints/*.pkl
+!runs/ablation_random_only.zip
+!runs/ablation_random_only.vecnormalize.pkl
+!runs/ablation_heuristic_only.zip
+!runs/ablation_heuristic_only.vecnormalize.pkl
 *.pyc
 *.aux
 *.log
